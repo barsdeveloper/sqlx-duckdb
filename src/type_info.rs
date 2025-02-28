@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use duckdb::arrow::datatypes::ArrowNativeType;
 use rust_decimal::Decimal;
 use sqlx_core::type_info::TypeInfo;
 
@@ -98,5 +99,87 @@ impl TypeInfo for DuckdbDBTypeInfo {
 
     fn name(&self) -> &str {
         &self.type_name
+    }
+}
+
+impl From<duckdb::arrow::datatypes::DataType> for DuckdbDBTypeInfo {
+    fn from(value: duckdb::arrow::datatypes::DataType) -> Self {
+        use duckdb::arrow::datatypes::DataType;
+        Self {
+            type_name: value.to_string(),
+            value_kind: match value {
+                DataType::Null => DuckDBValueKind::Null,
+                DataType::Boolean => DuckDBValueKind::Boolean(false),
+                DataType::Int8 => todo!(),
+                DataType::Int16 => todo!(),
+                DataType::Int32 => todo!(),
+                DataType::Int64 => todo!(),
+                DataType::UInt8 => todo!(),
+                DataType::UInt16 => todo!(),
+                DataType::UInt32 => todo!(),
+                DataType::UInt64 => todo!(),
+                DataType::Float16 => todo!(),
+                DataType::Float32 => todo!(),
+                DataType::Float64 => todo!(),
+                DataType::Timestamp(time_unit, _) => todo!(),
+                DataType::Date32 => todo!(),
+                DataType::Date64 => todo!(),
+                DataType::Time32(time_unit) => todo!(),
+                DataType::Time64(time_unit) => todo!(),
+                DataType::Duration(time_unit) => todo!(),
+                DataType::Interval(interval_unit) => todo!(),
+                DataType::Binary => todo!(),
+                DataType::FixedSizeBinary(_) => todo!(),
+                DataType::LargeBinary => todo!(),
+                DataType::BinaryView => todo!(),
+                DataType::Utf8 => todo!(),
+                DataType::LargeUtf8 => todo!(),
+                DataType::Utf8View => todo!(),
+                DataType::List(field) => todo!(),
+                DataType::ListView(field) => todo!(),
+                DataType::FixedSizeList(field, _) => todo!(),
+                DataType::LargeList(field) => todo!(),
+                DataType::LargeListView(field) => todo!(),
+                DataType::Struct(fields) => todo!(),
+                DataType::Union(union_fields, union_mode) => todo!(),
+                DataType::Dictionary(data_type, data_type1) => todo!(),
+                DataType::Decimal128(_, _) => todo!(),
+                DataType::Decimal256(_, _) => todo!(),
+                DataType::Map(field, _) => todo!(),
+                DataType::RunEndEncoded(field, field1) => todo!(),
+            },
+        }
+    }
+}
+
+impl From<DuckdbDBTypeInfo> for DuckDBValueKind {
+    fn from(type_info: DuckdbDBTypeInfo) -> Self {
+        type_info.value_kind
+    }
+}
+
+impl duckdb::ToSql for DuckDBValueKind {
+    fn to_sql(&self) -> duckdb::Result<duckdb::types::ToSqlOutput<'_>> {
+        use duckdb::types::*;
+        match self {
+            DuckDBValueKind::Null => Null.to_sql(),
+            DuckDBValueKind::Varchar(v) => v.to_sql(),
+            DuckDBValueKind::Boolean(v) => v.to_sql(),
+            DuckDBValueKind::Int8(v) => v.to_sql(),
+            DuckDBValueKind::Int16(v) => v.to_sql(),
+            DuckDBValueKind::Int32(v) => v.to_sql(),
+            DuckDBValueKind::Int64(v) => v.to_sql(),
+            DuckDBValueKind::Int128(v) => v.to_sql(),
+            DuckDBValueKind::UInt8(v) => v.to_sql(),
+            DuckDBValueKind::UInt16(v) => v.to_sql(),
+            DuckDBValueKind::UInt32(v) => v.to_sql(),
+            DuckDBValueKind::UInt64(v) => v.to_sql(),
+            // TODO: replace with v.to_sql() when u128 has ToSql implemented
+            DuckDBValueKind::UInt128(v) => Ok(ToSqlOutput::Owned(Value::HugeInt(*v as i128))),
+            DuckDBValueKind::Float32(v) => v.to_sql(),
+            DuckDBValueKind::Float64(v) => v.to_sql(),
+            DuckDBValueKind::Decimal(_, _, decimal) => todo!(),
+            DuckDBValueKind::Blob(items) => todo!(),
+        }
     }
 }

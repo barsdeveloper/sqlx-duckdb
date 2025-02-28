@@ -18,6 +18,12 @@ impl DuckDBError {
     }
 }
 
+impl From<duckdb::Error> for DuckDBError {
+    fn from(error: duckdb::Error) -> Self {
+        DuckDBError::new(error)
+    }
+}
+
 impl std::error::Error for DuckDBError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.error.source()

@@ -25,3 +25,13 @@ impl Row for DuckDBRow {
         todo!()
     }
 }
+
+impl<'s> From<duckdb::Row<'s>> for DuckDBRow {
+    fn from(value: duckdb::Row) -> Self {
+        let stmt = value.as_ref();
+        let count = stmt.column_count();
+        let name = stmt.column_name(0);
+        let tt = stmt.column_type(0);
+        let column = value.get_ref(0);
+    }
+}

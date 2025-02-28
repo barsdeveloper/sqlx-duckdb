@@ -1,11 +1,16 @@
-use crate::{
-    database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions,
-    transaction::DuckDBTransactionManager, BoxFuture,
-};
-use sqlx_core::transaction::TransactionManager;
-use sqlx_core::{
-    any::AnyConnectionBackend, connection::Connection, database::Database, transaction::Transaction,
-};
+use crate::arguments::DuckDBArguments;
+use crate::query_result::DuckDBQueryResult;
+use crate::row::DuckDBRow;
+use crate::{database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions};
+use duckdb::Error;
+use futures_core::future::BoxFuture;
+use futures_core::stream::BoxStream;
+use futures_core::Stream;
+use sqlx_core::database::Database;
+use sqlx_core::describe::Describe;
+use sqlx_core::executor::{Execute, Executor};
+use sqlx_core::{connection::Connection, transaction::Transaction};
+use sqlx_core::{try_stream, Either};
 use std::future;
 
 /// A connection to an open [DuckDB] database.
@@ -38,6 +43,31 @@ impl DuckDBConnection {
             connection,
             transaction: false,
         })
+    }
+
+    pub(crate) async fn run(
+        &mut self,
+        query: &str,
+        arguments: Option<DuckDBArguments>,
+        cached: bool,
+    ) -> Result<impl Stream<Item = Result<Either<DuckDBQueryResult, DuckDBRow>, Error>>, Error>
+    {
+        let connection = self.connection;
+
+        tokio::spawn_blocking(move || {
+            let statement = if cached {
+                connection.prepare_cached(sql)
+            } else {
+                connection.prepare(sql)
+            }
+            .map_err(|e| e.into())?;
+            let result = statement.query(arguments.unwrap_or_default().into_duckdb_params())?;
+            statement.stream_arrow(
+                arguments.map_or(duckdb::params![], |a| a.into_duckdb_params()),
+                schema,
+            )
+        });
+        Ok(())
     }
 }
 
@@ -92,86 +122,63 @@ impl Connection for DuckDBConnection {
     }
 }
 
-impl AnyConnectionBackend for DuckDBConnection {
-    fn name(&self) -> &str {
-        <DuckDB as Database>::NAME
-    }
+impl<'c> Executor<'c> for &'c mut DuckDBConnection {
+    type Database = DuckDB;
 
-    fn close(self: Box<Self>) -> BoxFuture<'static, sqlx_core::Result<()>> {
-        Connection::close(*self)
-    }
-
-    fn close_hard(self: Box<Self>) -> BoxFuture<'static, sqlx_core::Result<()>> {
-        Connection::close_hard(*self)
-    }
-
-    fn ping(&mut self) -> BoxFuture<'_, sqlx_core::Result<()>> {
-        Connection::ping(self)
-    }
-
-    fn begin(&mut self) -> BoxFuture<'_, sqlx_core::Result<()>> {
-        DuckDBTransactionManager::begin(self)
-    }
-
-    fn commit(&mut self) -> BoxFuture<'_, sqlx_core::Result<()>> {
-        DuckDBTransactionManager::commit(self)
-    }
-
-    fn rollback(&mut self) -> BoxFuture<'_, sqlx_core::Result<()>> {
-        DuckDBTransactionManager::rollback(self)
-    }
-
-    fn start_rollback(&mut self) {
-        DuckDBTransactionManager::start_rollback(self)
-    }
-
-    fn shrink_buffers(&mut self) {
-        Connection::shrink_buffers(self)
-    }
-
-    fn flush(&mut self) -> BoxFuture<'_, sqlx_core::Result<()>> {
-        Connection::flush(self)
-    }
-
-    fn should_flush(&self) -> bool {
-        Connection::should_flush(self)
-    }
-
-    fn fetch_many<'q>(
-        &'q mut self,
-        query: &'q str,
-        persistent: bool,
-        arguments: Option<sqlx_core::any::AnyArguments<'q>>,
+    fn fetch_many<'e, 'q: 'e, E>(
+        self,
+        mut query: E,
     ) -> BoxStream<
-        'q,
-        sqlx_core::Result<
-            sqlx_core::Either<sqlx_core::any::AnyQueryResult, sqlx_core::any::AnyRow>,
+        'e,
+        Result<
+            Either<<Self::Database as Database>::QueryResult, <Self::Database as Database>::Row>,
+            sqlx_core::Error,
         >,
-    > {
-        DuckDBTransactionManager::fetch_many(self)
+    >
+    where
+        'c: 'e,
+        E: 'q + Execute<'q, DuckDB>,
+    {
+        let sql = query.sql();
+        let params = query.take_arguments()?;
+        let connection = self.connection;
+        let task = tokio::task::spawn_blocking(move || {
+            let mut statement = connection.prepare(sql).map_err(|e| DuckDBError::new(e))?;
+            statement.execute(params.unwrap_or(duckdb::params![]));
+            Ok(())
+        });
+        Box::pin(Ok(self.connection.prepare(sql)?.query([])?))
     }
 
-    fn fetch_optional<'q>(
-        &'q mut self,
-        query: &'q str,
-        persistent: bool,
-        arguments: Option<sqlx_core::any::AnyArguments<'q>>,
-    ) -> BoxFuture<'q, sqlx_core::Result<Option<sqlx_core::any::AnyRow>>> {
+    fn fetch_optional<'e, 'q: 'e, E>(
+        self,
+        query: E,
+    ) -> BoxFuture<'e, Result<Option<<Self::Database as Database>::Row>, sqlx_core::Error>>
+    where
+        'c: 'e,
+        E: 'q + sqlx_core::executor::Execute<'q, Self::Database>,
+    {
         todo!()
     }
 
-    fn prepare_with<'c, 'q: 'c>(
-        &'c mut self,
+    fn prepare_with<'e, 'q: 'e>(
+        self,
         sql: &'q str,
-        parameters: &[sqlx_core::any::AnyTypeInfo],
-    ) -> BoxFuture<'c, sqlx_core::Result<sqlx_core::any::AnyStatement<'q>>> {
+        parameters: &'e [<Self::Database as Database>::TypeInfo],
+    ) -> BoxFuture<'e, Result<<Self::Database as Database>::Statement<'q>, sqlx_core::Error>>
+    where
+        'c: 'e,
+    {
         todo!()
     }
 
-    fn describe<'q>(
-        &'q mut self,
+    fn describe<'e, 'q: 'e>(
+        self,
         sql: &'q str,
-    ) -> BoxFuture<'q, sqlx_core::Result<Describe<sqlx_core::any::Any>>> {
+    ) -> BoxFuture<'e, Result<Describe<Self::Database>, sqlx_core::Error>>
+    where
+        'c: 'e,
+    {
         todo!()
     }
 }

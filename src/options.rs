@@ -1,11 +1,11 @@
 use crate::{
     connection::DuckDBConnection,
     duckdb_enums::{AccessMode, DefaultNullOrder, DefaultOrder},
-    BoxFuture,
 };
+use futures_core::future::BoxFuture;
 use log::LevelFilter;
 use percent_encoding::percent_decode_str;
-use sqlx_core::{connection::ConnectOptions, url, Error};
+use sqlx_core::{any::AnyConnectOptions, connection::ConnectOptions, url, Error};
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
@@ -55,7 +55,7 @@ pub struct DuckDBConnectOptions {
 }
 
 impl DuckDBConnectOptions {
-    pub(crate) fn from_url(url: &str) -> Result<Self, Error> {
+    pub fn new(url: &str) -> Result<Self, Error> {
         if !url.starts_with("duckdb:") {
             return Err(Error::Configuration(
                 "Expected duckdb connection url to start with \"duckdb:\"".into(),
@@ -174,7 +174,7 @@ impl ConnectOptions for DuckDBConnectOptions {
     type Connection = DuckDBConnection;
 
     fn from_url(url: &sqlx_core::Url) -> Result<Self, sqlx_core::Error> {
-        Self::from_url(url.as_str())
+        Self::new(url.as_str())
     }
 
     fn connect(&self) -> BoxFuture<'_, Result<Self::Connection, sqlx_core::Error>>
@@ -196,7 +196,16 @@ impl ConnectOptions for DuckDBConnectOptions {
 impl FromStr for DuckDBConnectOptions {
     type Err = Error;
     fn from_str(url: &str) -> Result<Self, Self::Err> {
-        Self::from_url(url)
+        Self::new(url)
+    }
+}
+
+impl TryFrom<&AnyConnectOptions> for DuckDBConnectOptions {
+    type Error = sqlx_core::Error;
+
+    fn try_from(value: &AnyConnectOptions) -> Result<Self, Self::Error> {
+        let result = Self::from_url(&value.database_url)?;
+        Ok(result)
     }
 }
 

@@ -1,29 +1,41 @@
-use sqlx_core::{arguments::Arguments, error::BoxDynError};
-
-use crate::database::DuckDB;
+use crate::{database::DuckDB, type_info::DuckDBValueKind};
+use duckdb::ToSql;
+use sqlx_core::{arguments::Arguments, encode::Encode, error::BoxDynError, types::Type};
 
 #[derive(Default)]
-pub struct DuckDBArguments<'q>;
+pub struct DuckDBArguments {
+    pub(crate) values: Vec<DuckDBValueKind>,
+}
 
-impl<'q> Arguments<'q> for DuckDBArguments<'q> {
+impl DuckDBArguments {
+    pub(crate) fn into_duckdb_params(&self) -> Box<[&dyn ToSql]> {
+        self.values
+            .iter()
+            .map(|v| v as &dyn ToSql)
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+}
+
+impl<'q> Arguments<'q> for DuckDBArguments {
     type Database = DuckDB;
 
     fn reserve(&mut self, additional: usize, size: usize) {
-        todo!()
+        self.values.reserve(size);
     }
 
     fn add<T>(&mut self, value: T) -> Result<(), BoxDynError>
     where
-        T: 'q
-            + sqlx_core::encode::Encode<'q, Self::Database>
-            + sqlx_core::types::Type<Self::Database>,
+        T: 'q + Encode<'q, Self::Database> + Type<Self::Database>,
     {
-        todo!()
+        let type_info = value.produces().unwrap_or_else(T::type_info);
+        self.values.push(type_info.into());
+        Ok(())
     }
 
     fn len(&self) -> usize {
-        todo!()
+        self.values.len()
     }
 }
 
-pub struct DuckDBArgumentBuffer<'q>;
+pub struct DuckDBArgumentBuffer;

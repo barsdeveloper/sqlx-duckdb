@@ -1,5 +1,3 @@
-use sqlx_core::{database::Database, declare_driver_with_optional_migrate};
-
 use crate::{
     arguments::{DuckDBArgumentBuffer, DuckDBArguments},
     column::DuckDBColumn,
@@ -11,6 +9,7 @@ use crate::{
     type_info::DuckdbDBTypeInfo,
     value::{DuckDBValue, DuckDBValueRef},
 };
+use sqlx_core::{database::Database, declare_driver_with_optional_migrate};
 
 /// DuckDB database driver.
 #[derive(Debug)]
@@ -32,8 +31,8 @@ impl Database for DuckDB {
     type Value = DuckDBValue;
     type ValueRef<'r> = DuckDBValueRef<'r>;
 
-    type Arguments<'q> = DuckDBArguments<'q>;
-    type ArgumentBuffer<'q> = DuckDBArgumentBuffer<'q>;
+    type Arguments<'q> = DuckDBArguments;
+    type ArgumentBuffer<'q> = DuckDBArgumentBuffer;
 
     type Statement<'q> = DuckDBStatement<'q>;
 

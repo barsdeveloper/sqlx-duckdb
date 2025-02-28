@@ -1,5 +1,4 @@
-use std::{future::Future, pin::Pin};
-
+mod any;
 mod arguments;
 mod column;
 mod connection;
@@ -13,5 +12,3 @@ mod statement;
 mod transaction;
 mod type_info;
 mod value;
-
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

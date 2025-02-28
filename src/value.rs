@@ -9,7 +9,9 @@ pub struct DuckDBValue {
     type_info: DuckdbDBTypeInfo,
 }
 
-pub struct DuckDBValueRef<'_> {}
+pub struct DuckDBValueRef<'a> {
+    value: &'a DuckDBValue,
+}
 
 impl Value for DuckDBValue {
     type Database = DuckDB;

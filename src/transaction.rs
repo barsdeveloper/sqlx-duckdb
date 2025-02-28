@@ -1,6 +1,7 @@
+use futures_core::future::BoxFuture;
 use sqlx_core::transaction::TransactionManager;
 
-use crate::{connection::DuckDBConnection, database::DuckDB, BoxFuture};
+use crate::{connection::DuckDBConnection, database::DuckDB};
 
 pub struct DuckDBTransactionManager;
 
