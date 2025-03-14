@@ -1,88 +1,116 @@
-use std::fmt::Display;
-
-use duckdb::arrow::datatypes::ArrowNativeType;
+use crate::{error::DuckDBError, Interval};
+use libduckdb_sys::duckdb_interval;
 use rust_decimal::Decimal;
-use sqlx_core::type_info::TypeInfo;
+use sqlx_core::{
+    ext::ustr::UStr,
+    type_info::TypeInfo,
+    types::{
+        time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
+        JsonValue,
+    },
+    HashMap, Result,
+};
+use std::fmt::Display;
+use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "offline", derive(serde::Serialize, serde::Deserialize))]
-pub(crate) enum DuckDBValueKind {
+#[derive(Debug, Clone)]
+pub(crate) enum DuckDBField {
     Null,
-    Varchar(String),
-    Boolean(bool),
-    Int8(i8),
-    Int16(i16),
-    Int32(i32),
-    Int64(i64),
-    Int128(i128),
-    UInt8(u8),
-    UInt16(u16),
-    UInt32(u32),
-    UInt64(u64),
-    UInt128(u128),
-    Float32(f32),
-    Float64(f64),
-    Decimal(u8, u8, Decimal),
-    Blob(Box<[u8]>),
-    // Date(),
-    // Time,
-    // Timestamp,
-    // TimestampWithTimezone,
-    // Interval,
-    // Uuid,
-    // Json,
-    // Array(Box<DataType>, u8),
-    // List(Box<DataType>),
-    // Map(Box<DataType>, Box<DataType>),
+    Boolean(Option<bool>),
+    Int8(Option<i8>),
+    Int16(Option<i16>),
+    Int32(Option<i32>),
+    Int64(Option<i64>),
+    Int128(Option<i128>),
+    UInt8(Option<u8>),
+    UInt16(Option<u16>),
+    UInt32(Option<u32>),
+    UInt64(Option<u64>),
+    UInt128(Option<u128>),
+    Float32(Option<f32>),
+    Float64(Option<f64>),
+    Decimal(Option<Decimal>, /* prec: */ u8, /* scale: */ u8),
+    Varchar(Option<String>),
+    Blob(Option<Box<[u8]>>),
+    Date(Option<Date>),
+    Time(Option<Time>),
+    Timestamp(Option<PrimitiveDateTime>),
+    TimestampWithTimezone(Option<OffsetDateTime>),
+    Interval(Option<Interval>),
+    Uuid(Option<Uuid>),
+    Json(Option<JsonValue>),
+    Array(
+        Option<Box<[DuckDBField]>>,
+        /* type: */ Box<DuckDBField>,
+        /* len: */ u8,
+    ),
+    List(Option<Vec<DuckDBField>>, /* type: */ Box<DuckDBField>),
+    Map(
+        Option<HashMap<DuckDBField, DuckDBField>>,
+        /* key: */ Box<DuckDBField>,
+        /* value: */ Box<DuckDBField>,
+    ),
 }
 
 /// Type information for a SQLite type.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "offline", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
 pub struct DuckdbDBTypeInfo {
-    type_name: String,
-    value_kind: DuckDBValueKind,
+    type_name: UStr,
+    field: DuckDBField,
 }
 
 impl DuckdbDBTypeInfo {
-    fn new(data_type: DuckDBValueKind) -> Self {
-        Self {
-            type_name: Self::type_name(&data_type),
-            value_kind: data_type,
-        }
+    fn type_name(data_type: &DuckDBField) -> Result<UStr> {
+        let result = match data_type {
+            DuckDBField::Null => {
+                return Err(DuckDBError::new(
+                    "The field is null and doesn't contain information about the type".into(),
+                )
+                .into());
+            }
+            DuckDBField::Boolean(..) => "BOOLEAN".into(),
+            DuckDBField::Int8(..) => "TINYINT".into(),
+            DuckDBField::Int16(..) => "SMALLINT".into(),
+            DuckDBField::Int32(..) => "INTEGER".into(),
+            DuckDBField::Int64(..) => "BIGINT".into(),
+            DuckDBField::Int128(..) => "HUGEINT".into(),
+            DuckDBField::UInt8(..) => "UTINYINT".into(),
+            DuckDBField::UInt16(..) => "USMALLINT".into(),
+            DuckDBField::UInt32(..) => "UINTEGER".into(),
+            DuckDBField::UInt64(..) => "UBIGINT".into(),
+            DuckDBField::UInt128(..) => "UHUGEINT".into(),
+            DuckDBField::Float32(..) => "FLOAT".into(),
+            DuckDBField::Float64(..) => "DOUBLE".into(),
+            DuckDBField::Decimal(_, prec, scale) => format!("DECIMAL({}, {})", prec, scale).into(),
+            DuckDBField::Varchar(..) => "VARCHAR".into(),
+            DuckDBField::Blob(..) => "BLOB".into(),
+            DuckDBField::Date(..) => "DATE".into(),
+            DuckDBField::Time(..) => "TIME".into(),
+            DuckDBField::Timestamp(..) => "TIMESTAMP".into(),
+            DuckDBField::TimestampWithTimezone(..) => "TIMESTAMP WITH TIME ZONE".into(),
+            DuckDBField::Interval(..) => "INTERVAL".into(),
+            DuckDBField::Uuid(..) => "UUID".into(),
+            DuckDBField::Json(..) => "JSON".into(),
+            DuckDBField::Array(.., t, l) => format!("{}[{}]", Self::type_name(t)?, l).into(),
+            DuckDBField::List(.., data_type) => format!("{}[]", Self::type_name(data_type)?).into(),
+            DuckDBField::Map(.., k, v) => {
+                format!("MAP({}, {})", Self::type_name(k)?, Self::type_name(v)?).into()
+            }
+        };
+        Ok(result)
     }
 
-    fn type_name(data_type: &DuckDBValueKind) -> String {
-        match data_type {
-            DuckDBValueKind::Null | DuckDBValueKind::Varchar(_) => "VARCHAR".into(),
-            DuckDBValueKind::Boolean(_) => "BOOLEAN".into(),
-            DuckDBValueKind::Int8(_) => "TINYINT".into(),
-            DuckDBValueKind::Int16(_) => "SMALLINT".into(),
-            DuckDBValueKind::Int32(_) => "INTEGER".into(),
-            DuckDBValueKind::Int64(_) => "BIGINT".into(),
-            DuckDBValueKind::Int128(_) => "HUGEINT".into(),
-            DuckDBValueKind::UInt8(_) => "UTINYINT".into(),
-            DuckDBValueKind::UInt16(_) => "USMALLINT".into(),
-            DuckDBValueKind::UInt32(_) => "UINTEGER".into(),
-            DuckDBValueKind::UInt64(_) => "UBIGINT".into(),
-            DuckDBValueKind::UInt128(_) => "UHUGEINT".into(),
-            DuckDBValueKind::Float32(_) => "FLOAT".into(),
-            DuckDBValueKind::Float64(_) => "DOUBLE".into(),
-            DuckDBValueKind::Decimal(precision, scale, _) => {
-                format!("DECIMAL({},{})", precision, scale)
-            }
-            DuckDBValueKind::Blob(_) => "BLOB".into(),
-            // DataType::Date => "DATE".into(),
-            // DataType::Time => "TIME".into(),
-            // DataType::Timestamp => "TIMESTAMP".into(),
-            // DataType::TimestampWithTimezone => "TIMESTAMP WITH TIME ZONE".into(),
-            // DataType::Interval => "INTERVAL".into(),
-            // DataType::Uuid => "UUID".into(),
-            // DataType::Json => "JSON".into(),
-            // DataType::Array(data_type, len) => format!("{}[{}]", Self::type_name(data_type), len),
-            // DataType::List(data_type) => format!("{}[]", Self::type_name(data_type)),
-            // DataType::Map(k, v) => format!("MAP({},{})", Self::type_name(k), Self::type_name(v)),
+    pub fn new(field: DuckDBField) -> Self {
+        Self {
+            type_name: Self::type_name(&field).unwrap_or("".into()),
+            field,
         }
+    }
+}
+
+impl PartialEq for DuckdbDBTypeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_name == other.type_name
     }
 }
 
@@ -94,7 +122,37 @@ impl Display for DuckdbDBTypeInfo {
 
 impl TypeInfo for DuckdbDBTypeInfo {
     fn is_null(&self) -> bool {
-        matches!(self.value_kind, DuckDBValueKind::Null)
+        type F = DuckDBField;
+        matches!(
+            self.field,
+            F::Null
+                | F::Boolean(None, ..)
+                | F::Int8(None, ..)
+                | F::Int16(None, ..)
+                | F::Int32(None, ..)
+                | F::Int64(None, ..)
+                | F::Int128(None, ..)
+                | F::UInt8(None, ..)
+                | F::UInt16(None, ..)
+                | F::UInt32(None, ..)
+                | F::UInt64(None, ..)
+                | F::UInt128(None, ..)
+                | F::Float32(None, ..)
+                | F::Float64(None, ..)
+                | F::Decimal(None, ..)
+                | F::Varchar(None, ..)
+                | F::Blob(None, ..)
+                | F::Date(None, ..)
+                | F::Time(None, ..)
+                | F::Timestamp(None, ..)
+                | F::TimestampWithTimezone(None, ..)
+                | F::Interval(None, ..)
+                | F::Uuid(None, ..)
+                | F::Json(None, ..)
+                | F::Array(None, ..)
+                | F::List(None, ..)
+                | F::Map(None, ..)
+        )
     }
 
     fn name(&self) -> &str {
@@ -102,84 +160,14 @@ impl TypeInfo for DuckdbDBTypeInfo {
     }
 }
 
-impl From<duckdb::arrow::datatypes::DataType> for DuckdbDBTypeInfo {
-    fn from(value: duckdb::arrow::datatypes::DataType) -> Self {
-        use duckdb::arrow::datatypes::DataType;
-        Self {
-            type_name: value.to_string(),
-            value_kind: match value {
-                DataType::Null => DuckDBValueKind::Null,
-                DataType::Boolean => DuckDBValueKind::Boolean(false),
-                DataType::Int8 => todo!(),
-                DataType::Int16 => todo!(),
-                DataType::Int32 => todo!(),
-                DataType::Int64 => todo!(),
-                DataType::UInt8 => todo!(),
-                DataType::UInt16 => todo!(),
-                DataType::UInt32 => todo!(),
-                DataType::UInt64 => todo!(),
-                DataType::Float16 => todo!(),
-                DataType::Float32 => todo!(),
-                DataType::Float64 => todo!(),
-                DataType::Timestamp(time_unit, _) => todo!(),
-                DataType::Date32 => todo!(),
-                DataType::Date64 => todo!(),
-                DataType::Time32(time_unit) => todo!(),
-                DataType::Time64(time_unit) => todo!(),
-                DataType::Duration(time_unit) => todo!(),
-                DataType::Interval(interval_unit) => todo!(),
-                DataType::Binary => todo!(),
-                DataType::FixedSizeBinary(_) => todo!(),
-                DataType::LargeBinary => todo!(),
-                DataType::BinaryView => todo!(),
-                DataType::Utf8 => todo!(),
-                DataType::LargeUtf8 => todo!(),
-                DataType::Utf8View => todo!(),
-                DataType::List(field) => todo!(),
-                DataType::ListView(field) => todo!(),
-                DataType::FixedSizeList(field, _) => todo!(),
-                DataType::LargeList(field) => todo!(),
-                DataType::LargeListView(field) => todo!(),
-                DataType::Struct(fields) => todo!(),
-                DataType::Union(union_fields, union_mode) => todo!(),
-                DataType::Dictionary(data_type, data_type1) => todo!(),
-                DataType::Decimal128(_, _) => todo!(),
-                DataType::Decimal256(_, _) => todo!(),
-                DataType::Map(field, _) => todo!(),
-                DataType::RunEndEncoded(field, field1) => todo!(),
-            },
-        }
+impl From<DuckDBField> for DuckdbDBTypeInfo {
+    fn from(field: DuckDBField) -> Self {
+        Self::new(field)
     }
 }
 
-impl From<DuckdbDBTypeInfo> for DuckDBValueKind {
-    fn from(type_info: DuckdbDBTypeInfo) -> Self {
-        type_info.value_kind
-    }
-}
-
-impl duckdb::ToSql for DuckDBValueKind {
-    fn to_sql(&self) -> duckdb::Result<duckdb::types::ToSqlOutput<'_>> {
-        use duckdb::types::*;
-        match self {
-            DuckDBValueKind::Null => Null.to_sql(),
-            DuckDBValueKind::Varchar(v) => v.to_sql(),
-            DuckDBValueKind::Boolean(v) => v.to_sql(),
-            DuckDBValueKind::Int8(v) => v.to_sql(),
-            DuckDBValueKind::Int16(v) => v.to_sql(),
-            DuckDBValueKind::Int32(v) => v.to_sql(),
-            DuckDBValueKind::Int64(v) => v.to_sql(),
-            DuckDBValueKind::Int128(v) => v.to_sql(),
-            DuckDBValueKind::UInt8(v) => v.to_sql(),
-            DuckDBValueKind::UInt16(v) => v.to_sql(),
-            DuckDBValueKind::UInt32(v) => v.to_sql(),
-            DuckDBValueKind::UInt64(v) => v.to_sql(),
-            // TODO: replace with v.to_sql() when u128 has ToSql implemented
-            DuckDBValueKind::UInt128(v) => Ok(ToSqlOutput::Owned(Value::HugeInt(*v as i128))),
-            DuckDBValueKind::Float32(v) => v.to_sql(),
-            DuckDBValueKind::Float64(v) => v.to_sql(),
-            DuckDBValueKind::Decimal(_, _, decimal) => todo!(),
-            DuckDBValueKind::Blob(items) => todo!(),
-        }
+impl From<DuckdbDBTypeInfo> for DuckDBField {
+    fn from(value: DuckdbDBTypeInfo) -> Self {
+        value.field
     }
 }

@@ -22,12 +22,3 @@ impl Extend<DuckDBQueryResult> for DuckDBQueryResult {
         }
     }
 }
-
-impl From<DuckDBQueryResult> for sqlx_core::any::AnyQueryResult {
-    fn from(done: DuckDBQueryResult) -> Self {
-        sqlx_core::any::AnyQueryResult {
-            rows_affected: done.rows_affected,
-            last_insert_id: done.last_insert_id,
-        }
-    }
-}

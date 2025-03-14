@@ -1,44 +1,94 @@
 use crate::arguments::DuckDBArguments;
-use crate::query_result::DuckDBQueryResult;
+use crate::cbox::CBox;
+use crate::column::DuckDBColumn;
+use crate::extract_value::extract_value;
 use crate::row::DuckDBRow;
 use crate::{database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions};
-use duckdb::Error;
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
 use futures_core::Stream;
-use sqlx_core::database::Database;
-use sqlx_core::describe::Describe;
-use sqlx_core::executor::{Execute, Executor};
-use sqlx_core::{connection::Connection, transaction::Transaction};
-use sqlx_core::{try_stream, Either};
-use std::future;
+use libduckdb_sys::*;
+use sqlx_core::{
+    connection::Connection,
+    database::Database,
+    describe::Describe,
+    executor::{Execute, Executor},
+    transaction::Transaction,
+    Either, Error, Result,
+};
+use std::ffi::{c_char, CStr, CString};
+use std::ops::DerefMut;
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::LazyLock;
+use std::{future, mem, ptr};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// A connection to an open [DuckDB] database.
 ///
-/// Because SQLite is an in-process database accessed by blocking API calls, SQLx uses a background
-/// thread and communicates with it via channels to allow non-blocking access to the database.
+/// Because DuckDB is an in-process database accessed by blocking API calls, SQLx uses tokio
+/// to allow non-blocking access to the database.
 ///
-/// Dropping this struct will signal the worker thread to quit and close the database, though
-/// if an error occurs there is no way to pass it back to the user this way.
-///
-/// You can explicitly call [`.close()`][Self::close] to ensure the database is closed successfully
-/// or get an error otherwise.
+/// Dropping this struct will not close the database because open databases are cached, to avoid
+/// opening the same database multiple times. Most likely the database will be closed at the program
+/// end.
 #[derive(Debug)]
 pub struct DuckDBConnection {
-    pub(crate) connection: duckdb::Connection,
+    pub(crate) connection: CBox<duckdb_connection>,
     pub(crate) transaction: bool,
 }
 
 impl DuckDBConnection {
-    pub(crate) async fn establish(
-        options: &DuckDBConnectOptions,
-    ) -> Result<Self, sqlx_core::Error> {
-        let connection = if options.in_memory {
-            duckdb::Connection::open_in_memory_with_flags(options.into())
-        } else {
-            duckdb::Connection::open_with_flags(&*options.path, options.into())
-        }
-        .map_err(|e| sqlx_core::Error::Database(Box::new(DuckDBError::new(e.into()))))?;
+    pub(crate) fn duckdb_instance_cache() -> &'static AtomicPtr<_duckdb_instance_cache> {
+        static DATABASE_CACHE: LazyLock<CBox<AtomicPtr<_duckdb_instance_cache>>> =
+            LazyLock::new(|| {
+                CBox::new(
+                    AtomicPtr::new(unsafe { duckdb_create_instance_cache() }),
+                    |ptr| unsafe {
+                        duckdb_destroy_instance_cache(&mut ptr.load(Ordering::Relaxed))
+                    },
+                )
+            });
+        &**DATABASE_CACHE
+    }
+
+    pub(crate) async fn establish(options: &DuckDBConnectOptions) -> Result<Self> {
+        let db_cache = DuckDBConnection::duckdb_instance_cache().load(Ordering::Relaxed);
+        let config = options.create_duckdb_config()?;
+        let mut database: duckdb_database = null_mut();
+        let connection = unsafe {
+            let error: *mut *mut c_char = null_mut();
+            if duckdb_get_or_create_from_cache(
+                db_cache,
+                options.path.as_ptr(),
+                &mut database,
+                *config,
+                error,
+            ) != duckdb_state_DuckDBSuccess
+            {
+                return Err(Error::Configuration(
+                    format!(
+                        "Error while opening a (possibly cached) database instance: `{}`",
+                        CStr::from_ptr(*error).to_str().unwrap()
+                    )
+                    .into(),
+                ));
+            }
+            let mut connection: duckdb_connection = null_mut();
+            if duckdb_connect(database, &mut connection) != duckdb_state_DuckDBSuccess {
+                return Err(Error::Configuration(
+                    format!(
+                        "Error connecting to the database `{}`",
+                        CStr::from_ptr(*error).to_str().unwrap()
+                    )
+                    .into(),
+                ));
+            }
+            CBox::new(connection, |mut connection| {
+                duckdb_disconnect(&mut connection);
+            })
+        };
         Ok(DuckDBConnection {
             connection,
             transaction: false,
@@ -50,24 +100,75 @@ impl DuckDBConnection {
         query: &str,
         arguments: Option<DuckDBArguments>,
         cached: bool,
-    ) -> Result<impl Stream<Item = Result<Either<DuckDBQueryResult, DuckDBRow>, Error>>, Error>
-    {
-        let connection = self.connection;
-
-        tokio::spawn_blocking(move || {
-            let statement = if cached {
-                connection.prepare_cached(sql)
-            } else {
-                connection.prepare(sql)
+    ) -> Result<impl Stream<Item = DuckDBRow>> {
+        let query = CString::new(query).map_err(|e| DuckDBError::new(e.to_string()))?;
+        let (mut tx, mut rx) = mpsc::unbounded_channel::<DuckDBRow>();
+        let connection = AtomicPtr::new(*self.connection);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            unsafe {
+                let mut prepared_statement =
+                    CBox::new(ptr::null_mut(), |mut ptr| duckdb_destroy_prepare(&mut ptr));
+                let rc = duckdb_prepare(
+                    connection.load(Ordering::Relaxed),
+                    query.as_ptr(),
+                    &mut *prepared_statement,
+                );
+                if rc != duckdb_state_DuckDBSuccess {
+                    let message = CStr::from_ptr(duckdb_prepare_error(*prepared_statement))
+                        .to_str()
+                        .unwrap()
+                        .into();
+                    return Err(DuckDBError::new(message).into());
+                }
+                let mut result: duckdb_result = mem::zeroed();
+                let rc = duckdb_execute_prepared_streaming(*prepared_statement, &mut result);
+                let mut result = CBox::new(result, |mut r| duckdb_destroy_result(&mut r));
+                if rc != duckdb_state_DuckDBSuccess {
+                    return Err(DuckDBError::new("Error while executing the query".into()).into());
+                }
+                let chunk = CBox::new(duckdb_fetch_chunk(*result), |mut v| {
+                    duckdb_destroy_data_chunk(&mut v);
+                });
+                let rows = duckdb_data_chunk_get_size(*chunk);
+                let cols = duckdb_data_chunk_get_column_count(*chunk);
+                let info = (0..cols)
+                    .map(|i| {
+                        let vector = duckdb_data_chunk_get_vector(*chunk, i);
+                        let logical_type = duckdb_vector_get_column_type(vector);
+                        let type_id = duckdb_get_type_id(logical_type);
+                        let data = duckdb_vector_get_data(vector);
+                        let validity = duckdb_vector_get_validity(vector);
+                        let name = CStr::from_ptr(duckdb_column_name(result.deref_mut(), i))
+                            .to_str()
+                            .unwrap();
+                        (vector, logical_type, type_id, data, validity, name)
+                    })
+                    .collect::<Box<[_]>>();
+                (0..rows).for_each(|row| {
+                    let columns = (0..cols).map(|col| {
+                        let col = col as usize;
+                        let info = info[col];
+                        Ok(DuckDBColumn {
+                            name: info.5.into(),
+                            ordinal: col as usize,
+                            type_info: extract_value(
+                                info.0,
+                                row as usize,
+                                info.1,
+                                info.2,
+                                info.3,
+                                info.4,
+                            )?
+                            .into(),
+                        })
+                    });
+                    let message = DuckDBRow(columns.collect::<Result<_>>().unwrap());
+                    tx.send(message);
+                });
             }
-            .map_err(|e| e.into())?;
-            let result = statement.query(arguments.unwrap_or_default().into_duckdb_params())?;
-            statement.stream_arrow(
-                arguments.map_or(duckdb::params![], |a| a.into_duckdb_params()),
-                schema,
-            )
+            Ok(())
         });
-        Ok(())
+        Ok(UnboundedReceiverStream::new(rx)).into()
     }
 }
 
@@ -75,14 +176,11 @@ impl Connection for DuckDBConnection {
     type Database = DuckDB;
     type Options = DuckDBConnectOptions;
 
-    fn close(self) -> BoxFuture<'static, Result<(), sqlx_core::Error>> {
+    fn close(mut self) -> BoxFuture<'static, Result<(), sqlx_core::Error>> {
         Box::pin(async move {
-            self.connection.close().map_err(|e| {
-                sqlx_core::Error::Protocol(format!(
-                    "Error while closing the connection: {}",
-                    e.1.to_string()
-                ))
-            })?;
+            tokio::task::spawn_blocking(move || unsafe {
+                duckdb_disconnect(self.connection.deref_mut());
+            });
             Ok(())
         })
     }
@@ -113,7 +211,7 @@ impl Connection for DuckDBConnection {
     fn shrink_buffers(&mut self) {}
 
     fn flush(&mut self) -> BoxFuture<'_, Result<(), sqlx_core::Error>> {
-        self.connection.flush_prepared_statement_cache();
+        // Nothing to be done
         Box::pin(future::ready(Ok(())))
     }
 
@@ -127,36 +225,28 @@ impl<'c> Executor<'c> for &'c mut DuckDBConnection {
 
     fn fetch_many<'e, 'q: 'e, E>(
         self,
-        mut query: E,
+        query: E,
     ) -> BoxStream<
         'e,
-        Result<
+        std::result::Result<
             Either<<Self::Database as Database>::QueryResult, <Self::Database as Database>::Row>,
-            sqlx_core::Error,
+            Error,
         >,
     >
     where
         'c: 'e,
-        E: 'q + Execute<'q, DuckDB>,
+        E: 'q + Execute<'q, Self::Database>,
     {
-        let sql = query.sql();
-        let params = query.take_arguments()?;
-        let connection = self.connection;
-        let task = tokio::task::spawn_blocking(move || {
-            let mut statement = connection.prepare(sql).map_err(|e| DuckDBError::new(e))?;
-            statement.execute(params.unwrap_or(duckdb::params![]));
-            Ok(())
-        });
-        Box::pin(Ok(self.connection.prepare(sql)?.query([])?))
+        todo!()
     }
 
     fn fetch_optional<'e, 'q: 'e, E>(
         self,
         query: E,
-    ) -> BoxFuture<'e, Result<Option<<Self::Database as Database>::Row>, sqlx_core::Error>>
+    ) -> BoxFuture<'e, std::result::Result<Option<<Self::Database as Database>::Row>, Error>>
     where
         'c: 'e,
-        E: 'q + sqlx_core::executor::Execute<'q, Self::Database>,
+        E: 'q + Execute<'q, Self::Database>,
     {
         todo!()
     }
@@ -165,7 +255,7 @@ impl<'c> Executor<'c> for &'c mut DuckDBConnection {
         self,
         sql: &'q str,
         parameters: &'e [<Self::Database as Database>::TypeInfo],
-    ) -> BoxFuture<'e, Result<<Self::Database as Database>::Statement<'q>, sqlx_core::Error>>
+    ) -> BoxFuture<'e, std::result::Result<<Self::Database as Database>::Statement<'q>, Error>>
     where
         'c: 'e,
     {
@@ -175,7 +265,7 @@ impl<'c> Executor<'c> for &'c mut DuckDBConnection {
     fn describe<'e, 'q: 'e>(
         self,
         sql: &'q str,
-    ) -> BoxFuture<'e, Result<Describe<Self::Database>, sqlx_core::Error>>
+    ) -> BoxFuture<'e, std::result::Result<Describe<Self::Database>, Error>>
     where
         'c: 'e,
     {

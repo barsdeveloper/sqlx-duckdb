@@ -1,21 +1,12 @@
-use crate::{database::DuckDB, type_info::DuckDBValueKind};
-use duckdb::ToSql;
+use crate::{database::DuckDB, type_info::DuckDBField};
 use sqlx_core::{arguments::Arguments, encode::Encode, error::BoxDynError, types::Type};
 
 #[derive(Default)]
 pub struct DuckDBArguments {
-    pub(crate) values: Vec<DuckDBValueKind>,
+    pub(crate) values: Vec<DuckDBField>,
 }
 
-impl DuckDBArguments {
-    pub(crate) fn into_duckdb_params(&self) -> Box<[&dyn ToSql]> {
-        self.values
-            .iter()
-            .map(|v| v as &dyn ToSql)
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-    }
-}
+impl DuckDBArguments {}
 
 impl<'q> Arguments<'q> for DuckDBArguments {
     type Database = DuckDB;

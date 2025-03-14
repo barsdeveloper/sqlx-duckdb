@@ -40,5 +40,3 @@ impl Database for DuckDB {
 
     const URL_SCHEMES: &'static [&'static str] = &["duckdb"];
 }
-
-declare_driver_with_optional_migrate!(DRIVER = DuckDB);
