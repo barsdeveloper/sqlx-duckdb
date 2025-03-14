@@ -1,14 +1,14 @@
-use crate::{error::DuckDBError, Interval};
+use crate::{error::DuckDBError, interval::Interval};
 use libduckdb_sys::duckdb_interval;
 use rust_decimal::Decimal;
 use sqlx_core::{
+    HashMap, Result,
     ext::ustr::UStr,
     type_info::TypeInfo,
     types::{
-        time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
         JsonValue,
+        time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
     },
-    HashMap, Result,
 };
 use std::fmt::Display;
 use uuid::Uuid;

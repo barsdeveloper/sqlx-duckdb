@@ -4,23 +4,23 @@ use crate::column::DuckDBColumn;
 use crate::extract_value::extract_value;
 use crate::row::DuckDBRow;
 use crate::{database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions};
+use futures_core::Stream;
 use futures_core::future::BoxFuture;
 use futures_core::stream::BoxStream;
-use futures_core::Stream;
 use libduckdb_sys::*;
 use sqlx_core::{
+    Either, Error, Result,
     connection::Connection,
     database::Database,
     describe::Describe,
     executor::{Execute, Executor},
     transaction::Transaction,
-    Either, Error, Result,
 };
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ops::DerefMut;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{future, mem, ptr};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -58,19 +58,19 @@ impl DuckDBConnection {
         let config = options.create_duckdb_config()?;
         let mut database: duckdb_database = null_mut();
         let connection = unsafe {
-            let error: *mut *mut c_char = null_mut();
+            let mut error: *mut c_char = null_mut();
             if duckdb_get_or_create_from_cache(
                 db_cache,
                 options.path.as_ptr(),
                 &mut database,
                 *config,
-                error,
+                &mut error,
             ) != duckdb_state_DuckDBSuccess
             {
                 return Err(Error::Configuration(
                     format!(
                         "Error while opening a (possibly cached) database instance: `{}`",
-                        CStr::from_ptr(*error).to_str().unwrap()
+                        CStr::from_ptr(error).to_str().unwrap()
                     )
                     .into(),
                 ));
@@ -80,7 +80,7 @@ impl DuckDBConnection {
                 return Err(Error::Configuration(
                     format!(
                         "Error connecting to the database `{}`",
-                        CStr::from_ptr(*error).to_str().unwrap()
+                        CStr::from_ptr(error).to_str().unwrap()
                     )
                     .into(),
                 ));

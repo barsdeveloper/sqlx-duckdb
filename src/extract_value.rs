@@ -1,9 +1,9 @@
-use crate::{error::DuckDBError, type_info::DuckDBField, Interval};
+use crate::{error::DuckDBError, type_info::DuckDBField};
 use libduckdb_sys::*;
 use rust_decimal::Decimal;
 use sqlx_core::{
-    types::time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
     Result,
+    types::time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
 };
 use std::{ffi::c_void, ptr, slice, time::Duration};
 

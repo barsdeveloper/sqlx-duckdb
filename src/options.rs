@@ -6,10 +6,10 @@ use libduckdb_sys::{
 };
 use log::LevelFilter;
 use percent_encoding::percent_decode_str;
-use sqlx_core::{connection::ConnectOptions, url, Error, Result};
+use sqlx_core::{Error, Result, connection::ConnectOptions, url};
 use std::{
     borrow::Cow,
-    ffi::{c_char, CStr, CString},
+    ffi::{CStr, CString, c_char},
     ops::{Deref, DerefMut},
     ptr,
     str::FromStr,
@@ -137,7 +137,7 @@ impl ConnectOptions for DuckDBConnectOptions {
     where
         Self::Connection: Sized,
     {
-        todo!()
+        Box::pin(DuckDBConnection::establish(self))
     }
 
     fn log_statements(self, level: LevelFilter) -> Self {

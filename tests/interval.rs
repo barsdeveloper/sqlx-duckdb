@@ -1,6 +1,6 @@
 mod tests {
 
-    use sqlx_duckdb::Interval;
+    use sqlx_duckdb::interval::Interval;
     use std::time::Duration;
 
     #[test]
