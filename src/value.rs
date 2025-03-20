@@ -6,11 +6,11 @@ use sqlx_core::{
 use std::borrow::Cow;
 
 pub struct DuckDBValue {
-    type_info: DuckdbDBTypeInfo,
+    pub(crate) type_info: DuckdbDBTypeInfo,
 }
 
 pub struct DuckDBValueRef<'a> {
-    value: &'a DuckDBValue,
+    pub(crate) type_info: &'a DuckdbDBTypeInfo,
 }
 
 impl Value for DuckDBValue {
@@ -34,15 +34,15 @@ impl<'a> ValueRef<'a> for DuckDBValueRef<'a> {
 
     fn to_owned(&self) -> DuckDBValue {
         DuckDBValue {
-            type_info: self.value.type_info.clone(),
+            type_info: self.type_info.clone(),
         }
     }
 
     fn type_info(&self) -> Cow<'a, DuckdbDBTypeInfo> {
-        Cow::Borrowed(&self.value.type_info)
+        Cow::Borrowed(&self.type_info)
     }
 
     fn is_null(&self) -> bool {
-        self.value.is_null()
+        self.type_info.is_null()
     }
 }

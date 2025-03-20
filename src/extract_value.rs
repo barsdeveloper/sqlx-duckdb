@@ -7,8 +7,6 @@ use sqlx_core::{
 };
 use std::{ffi::c_void, ptr, slice};
 
-const INLINE_STRING_CAPACITY: usize = 12;
-
 pub(crate) fn convert_date(date: duckdb_date_struct) -> Result<Date> {
     Date::from_calendar_date(
         date.year,
@@ -43,9 +41,7 @@ pub(crate) fn extract_value(
     validity: *mut u64,
 ) -> Result<DuckDBField> {
     unsafe {
-        let is_valid = !data.is_null()
-            && !validity.is_null()
-            && duckdb_validity_row_is_valid(validity, row as u64);
+        let is_valid = !data.is_null() && duckdb_validity_row_is_valid(validity, row as u64);
         type K = DuckDBField;
         let result = match type_id {
             DUCKDB_TYPE_DUCKDB_TYPE_BOOLEAN => K::Boolean(if is_valid {

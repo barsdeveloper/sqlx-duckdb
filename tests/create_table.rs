@@ -15,24 +15,21 @@ mod tests {
         let _ = sqlx::query("CREATE TABLE alpha (a INTEGER, b INTEGER)")
             .execute(&mut *connection)
             .await
-            .expect("Should succeed");
+            .unwrap();
         let _ = sqlx::query("INSERT INTO alpha VALUES (1, 2), (3, 4)")
             .execute(&mut *connection)
             .await
-            .expect("Should succeed");
-        let result = sqlx::query("SELECT * FROM alpha ")
+            .unwrap();
+
+        #[derive(sqlx::FromRow, PartialEq, Debug)]
+        struct Entry {
+            pub a: i32,
+            pub b: i32,
+        }
+        let result = sqlx::query_as::<DuckDB, Entry>("SELECT * FROM alpha")
             .fetch_all(&mut *connection)
             .await
-            .expect("Should succeed");
-        assert_eq!(result.len(), 2);
-
-        #[derive(sqlx::FromRow)]
-        #[sqlx(type_name = "DuckDB")]
-        struct Entry {
-            a: i32,
-            b: i32,
-        }
-        let mut stream =
-            sqlx::query_as::<DuckDB, Entry>("SELECT * FROM alpha").fetch(&mut *connection);
+            .unwrap();
+        assert_eq!(result, vec![Entry { a: 1, b: 2 }, Entry { a: 3, b: 4 }])
     }
 }
