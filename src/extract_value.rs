@@ -5,7 +5,7 @@ use sqlx_core::{
     Result,
     types::time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
 };
-use std::{ffi::c_void, ptr, slice, time::Duration};
+use std::{ffi::c_void, ptr, slice};
 
 const INLINE_STRING_CAPACITY: usize = 12;
 

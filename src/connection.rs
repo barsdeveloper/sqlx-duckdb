@@ -2,12 +2,15 @@ use crate::arguments::DuckDBArguments;
 use crate::cbox::CBox;
 use crate::column::DuckDBColumn;
 use crate::extract_value::extract_value;
+use crate::query_result::DuckDBQueryResult;
 use crate::row::DuckDBRow;
 use crate::{database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions};
-use futures_core::Stream;
-use futures_core::future::BoxFuture;
-use futures_core::stream::BoxStream;
+use futures::future::BoxFuture;
+use futures::prelude::stream;
+use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use libduckdb_sys::*;
+use sqlx_core::rt::spawn_blocking;
 use sqlx_core::{
     Either, Error, Result,
     connection::Connection,
@@ -18,12 +21,11 @@ use sqlx_core::{
 };
 use std::ffi::{CStr, CString, c_char};
 use std::ops::DerefMut;
+use std::pin::Pin;
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{future, mem, ptr};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 /// A connection to an open [DuckDB] database.
 ///
@@ -95,40 +97,56 @@ impl DuckDBConnection {
         })
     }
 
-    pub(crate) async fn run(
+    pub(crate) fn run(
         &mut self,
         query: &str,
         arguments: Option<DuckDBArguments>,
         cached: bool,
-    ) -> Result<impl Stream<Item = DuckDBRow>> {
-        let query = CString::new(query).map_err(|e| DuckDBError::new(e.to_string()))?;
-        let (mut tx, mut rx) = mpsc::unbounded_channel::<DuckDBRow>();
+    ) -> Pin<Box<dyn Stream<Item = Result<Either<DuckDBQueryResult, DuckDBRow>>> + Send>> {
+        let query = CString::new(query).map_err(|e| DuckDBError::new(e.to_string()));
+        if query.is_err() {
+            return stream::once(future::ready(Err(query.unwrap_err().into()))).boxed();
+        }
+        let query = query.unwrap();
+        let (tx, rx) = flume::unbounded();
         let connection = AtomicPtr::new(*self.connection);
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            unsafe {
-                let mut prepared_statement =
-                    CBox::new(ptr::null_mut(), |mut ptr| duckdb_destroy_prepare(&mut ptr));
-                let rc = duckdb_prepare(
-                    connection.load(Ordering::Relaxed),
-                    query.as_ptr(),
-                    &mut *prepared_statement,
+        spawn_blocking(move || unsafe {
+            let mut prepared_statement =
+                CBox::new(ptr::null_mut(), |mut ptr| duckdb_destroy_prepare(&mut ptr));
+            let rc = duckdb_prepare(
+                connection.load(Ordering::Relaxed),
+                query.as_ptr(),
+                &mut *prepared_statement,
+            );
+            if rc != duckdb_state_DuckDBSuccess {
+                let message = CStr::from_ptr(duckdb_prepare_error(*prepared_statement))
+                    .to_str()
+                    .unwrap()
+                    .into();
+                let _ = tx.send(Err(DuckDBError::new(message).into()));
+            }
+            let mut result: duckdb_result = mem::zeroed();
+            let rc = duckdb_execute_prepared_streaming(*prepared_statement, &mut result);
+            let mut result = CBox::new(result, |mut r| duckdb_destroy_result(&mut r));
+            if rc != duckdb_state_DuckDBSuccess {
+                let _ = tx.send(Err(DuckDBError::new(
+                    "Error while executing the query".into(),
+                )
+                .into()));
+            }
+            let is_streaming = duckdb_result_is_streaming(*result);
+            loop {
+                let chunk = CBox::new(
+                    if is_streaming {
+                        duckdb_stream_fetch_chunk(*result)
+                    } else {
+                        duckdb_fetch_chunk(*result)
+                    },
+                    |mut v| duckdb_destroy_data_chunk(&mut v),
                 );
-                if rc != duckdb_state_DuckDBSuccess {
-                    let message = CStr::from_ptr(duckdb_prepare_error(*prepared_statement))
-                        .to_str()
-                        .unwrap()
-                        .into();
-                    return Err(DuckDBError::new(message).into());
+                if chunk.is_null() {
+                    return;
                 }
-                let mut result: duckdb_result = mem::zeroed();
-                let rc = duckdb_execute_prepared_streaming(*prepared_statement, &mut result);
-                let mut result = CBox::new(result, |mut r| duckdb_destroy_result(&mut r));
-                if rc != duckdb_state_DuckDBSuccess {
-                    return Err(DuckDBError::new("Error while executing the query".into()).into());
-                }
-                let chunk = CBox::new(duckdb_fetch_chunk(*result), |mut v| {
-                    duckdb_destroy_data_chunk(&mut v);
-                });
                 let rows = duckdb_data_chunk_get_size(*chunk);
                 let cols = duckdb_data_chunk_get_column_count(*chunk);
                 let info = (0..cols)
@@ -163,12 +181,34 @@ impl DuckDBConnection {
                         })
                     });
                     let message = DuckDBRow(columns.collect::<Result<_>>().unwrap());
-                    tx.send(message);
+                    let _ = tx.send(Ok(sqlx_core::Either::Right(message)));
                 });
             }
-            Ok(())
+            // } else {
+            //     let result_type = duckdb_result_statement_type(*result);
+            //     match result_type {
+            //         duckdb_result_type_DUCKDB_RESULT_TYPE_CHANGED_ROWS
+            //         | duckdb_result_type_DUCKDB_RESULT_TYPE_NOTHING => {
+            //             let _ = tx.send(Ok(sqlx_core::Either::Left(DuckDBQueryResult::new(
+            //                 duckdb_row_count(&mut *result),
+            //             ))));
+            //         }
+            //         duckdb_result_type_DUCKDB_RESULT_TYPE_QUERY_RESULT => {}
+            //         duckdb_result_type_DUCKDB_RESULT_TYPE_INVALID => {
+            //             let _ = tx.send(Err(
+            //                 DuckDBError::new("Invalid query result type".into()).into()
+            //             ));
+            //         }
+            //         _ => {
+            //             let _ = tx.send(Err(DuckDBError::new(
+            //                 "Unexpected error, no information".into(),
+            //             )
+            //             .into()));
+            //         }
+            //     }
+            // }
         });
-        Ok(UnboundedReceiverStream::new(rx)).into()
+        rx.into_stream().boxed()
     }
 }
 
@@ -178,7 +218,7 @@ impl Connection for DuckDBConnection {
 
     fn close(mut self) -> BoxFuture<'static, Result<(), sqlx_core::Error>> {
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || unsafe {
+            spawn_blocking(move || unsafe {
                 duckdb_disconnect(self.connection.deref_mut());
             });
             Ok(())
@@ -225,19 +265,18 @@ impl<'c> Executor<'c> for &'c mut DuckDBConnection {
 
     fn fetch_many<'e, 'q: 'e, E>(
         self,
-        query: E,
-    ) -> BoxStream<
-        'e,
-        std::result::Result<
-            Either<<Self::Database as Database>::QueryResult, <Self::Database as Database>::Row>,
-            Error,
-        >,
-    >
+        mut query: E,
+    ) -> BoxStream<'e, Result<Either<DuckDBQueryResult, DuckDBRow>>>
     where
         'c: 'e,
         E: 'q + Execute<'q, Self::Database>,
     {
-        todo!()
+        let sql = query.sql();
+        let arguments = match query.take_arguments().map_err(Error::Encode) {
+            Ok(arguments) => arguments,
+            Err(error) => return stream::once(future::ready(Err(error))).boxed(),
+        };
+        self.run(query.sql(), arguments, false)
     }
 
     fn fetch_optional<'e, 'q: 'e, E>(

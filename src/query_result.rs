@@ -5,6 +5,13 @@ pub struct DuckDBQueryResult {
 }
 
 impl DuckDBQueryResult {
+    pub fn new(rows_affected: u64) -> Self {
+        Self {
+            rows_affected,
+            last_insert_id: None,
+        }
+    }
+
     pub fn rows_affected(&self) -> u64 {
         self.rows_affected
     }

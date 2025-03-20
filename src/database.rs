@@ -9,7 +9,7 @@ use crate::{
     type_info::DuckdbDBTypeInfo,
     value::{DuckDBValue, DuckDBValueRef},
 };
-use sqlx_core::{database::Database, declare_driver_with_optional_migrate};
+use sqlx_core::database::Database;
 
 /// DuckDB database driver.
 #[derive(Debug)]

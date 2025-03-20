@@ -1,5 +1,8 @@
 use crate::{database::DuckDB, type_info::DuckDBField};
-use sqlx_core::{arguments::Arguments, encode::Encode, error::BoxDynError, types::Type};
+use sqlx_core::{
+    arguments::Arguments, encode::Encode, error::BoxDynError, impl_into_arguments_for_arguments,
+    types::Type,
+};
 
 #[derive(Default)]
 pub struct DuckDBArguments {
@@ -30,3 +33,5 @@ impl<'q> Arguments<'q> for DuckDBArguments {
 }
 
 pub struct DuckDBArgumentBuffer;
+
+impl_into_arguments_for_arguments!(DuckDBArguments);

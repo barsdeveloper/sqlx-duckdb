@@ -13,7 +13,7 @@ pub struct DuckDBError {
 impl DuckDBError {
     pub fn new(error: String) -> Self {
         let message = OnceLock::new();
-        message.set(error);
+        let _ = message.set(error);
         Self {
             source: None,
             message,
@@ -32,7 +32,7 @@ impl DuckDBError {
     pub fn message(&self) -> &str {
         let mut result = self.message.get();
         if result.is_none() && self.source.is_some() {
-            self.message.set(self.source.as_ref().unwrap().to_string());
+            let _ = self.message.set(self.source.as_ref().unwrap().to_string());
             result = self.message.get();
         }
         result.unwrap()

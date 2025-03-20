@@ -10,13 +10,17 @@ any = ["sqlx-core/any"]
 lto = true
 
 [dependencies]
-futures-core = "0.3.31"
+flume = "0.11.1"
+futures = "0.3.31"
 libduckdb-sys = { version = "1.2.0", default-features = false, features = ["bundled"] }
 log = "0.4.26"
 percent-encoding = "2.3.1"
 rust_decimal = "1.36.0"
 sqlx-core = { version = "0.8.3", features = ["any", "json", "time"] }
-tokio = { version = "1.43.0", features = ["macros", "rt", "sync"] }
 tokio-stream = "0.1.17"
 uuid = "1.15.1"
+
+[dev-dependencies]
+sqlx = { version = "0.8.3", features = ["runtime-tokio"] }
+tokio = { version = "1.44.1", features = ["macros", "rt"] }
 

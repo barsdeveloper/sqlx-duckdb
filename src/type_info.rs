@@ -1,5 +1,4 @@
 use crate::{error::DuckDBError, interval::Interval};
-use libduckdb_sys::duckdb_interval;
 use rust_decimal::Decimal;
 use sqlx_core::{
     HashMap, Result,
@@ -55,8 +54,8 @@ pub(crate) enum DuckDBField {
 /// Type information for a SQLite type.
 #[derive(Debug, Clone)]
 pub struct DuckdbDBTypeInfo {
-    type_name: UStr,
-    field: DuckDBField,
+    pub(crate) type_name: UStr,
+    pub(crate) field: DuckDBField,
 }
 
 impl DuckdbDBTypeInfo {

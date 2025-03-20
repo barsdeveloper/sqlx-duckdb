@@ -1,5 +1,5 @@
 use crate::{cbox::CBox, connection::DuckDBConnection};
-use futures_core::future::BoxFuture;
+use futures::future::BoxFuture;
 use libduckdb_sys::{
     duckdb_config, duckdb_create_config, duckdb_destroy_config, duckdb_set_config,
     duckdb_state_DuckDBSuccess,

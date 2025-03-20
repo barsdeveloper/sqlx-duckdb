@@ -33,14 +33,16 @@ impl<'a> ValueRef<'a> for DuckDBValueRef<'a> {
     type Database = DuckDB;
 
     fn to_owned(&self) -> DuckDBValue {
-        todo!()
+        DuckDBValue {
+            type_info: self.value.type_info.clone(),
+        }
     }
 
-    fn type_info(&self) -> Cow<'_, DuckdbDBTypeInfo> {
-        todo!()
+    fn type_info(&self) -> Cow<'a, DuckdbDBTypeInfo> {
+        Cow::Borrowed(&self.value.type_info)
     }
 
     fn is_null(&self) -> bool {
-        todo!()
+        self.value.is_null()
     }
 }
