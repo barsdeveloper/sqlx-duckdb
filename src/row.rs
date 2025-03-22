@@ -4,6 +4,7 @@ use sqlx_core::Error;
 use sqlx_core::column::Column;
 use sqlx_core::{Result, column::ColumnIndex, row::Row};
 
+#[derive(Debug)]
 pub struct DuckDBRow(pub(crate) Vec<DuckDBColumn>);
 
 impl Row for DuckDBRow {
@@ -34,5 +35,19 @@ impl ColumnIndex<DuckDBRow> for &'_ str {
                     .join(", ")
             ))
         })
+    }
+}
+
+impl ColumnIndex<DuckDBRow> for usize {
+    fn index(&self, row: &DuckDBRow) -> Result<usize> {
+        if *self < row.0.len() {
+            Ok(*self)
+        } else {
+            Err(Error::ColumnNotFound(format!(
+                "Column {} not found, last column: {}",
+                self,
+                row.0.len()
+            )))
+        }
     }
 }

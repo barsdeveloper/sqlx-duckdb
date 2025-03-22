@@ -8,7 +8,7 @@ use crate::{database::DuckDB, error::DuckDBError, options::DuckDBConnectOptions}
 use futures::future::BoxFuture;
 use futures::prelude::stream;
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use libduckdb_sys::*;
 use sqlx_core::rt::spawn_blocking;
 use sqlx_core::{
@@ -19,6 +19,7 @@ use sqlx_core::{
     executor::{Execute, Executor},
     transaction::Transaction,
 };
+use std::cell::OnceCell;
 use std::ffi::{CStr, CString, c_char};
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -26,6 +27,13 @@ use std::ptr::null_mut;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{future, mem, ptr};
+
+#[derive(PartialEq)]
+enum QueryResultType {
+    Many,
+    One,
+    None,
+}
 
 /// A connection to an open [DuckDB] database.
 ///
@@ -99,6 +107,7 @@ impl DuckDBConnection {
 
     pub(crate) fn run(
         &mut self,
+        result_type: QueryResultType,
         query: &str,
         arguments: Option<DuckDBArguments>,
         cached: bool,
@@ -108,7 +117,11 @@ impl DuckDBConnection {
             return stream::once(future::ready(Err(query.unwrap_err().into()))).boxed();
         }
         let query = query.unwrap();
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = if matches!(result_type, QueryResultType::Many) {
+            flume::unbounded()
+        } else {
+            flume::bounded(1)
+        };
         let connection = AtomicPtr::new(*self.connection);
         spawn_blocking(move || unsafe {
             let mut prepared_statement =
@@ -126,7 +139,11 @@ impl DuckDBConnection {
                 let _ = tx.send(Err(DuckDBError::new(message).into()));
             }
             let mut result: duckdb_result = mem::zeroed();
-            let rc = duckdb_execute_prepared_streaming(*prepared_statement, &mut result);
+            let rc = if matches!(result_type, QueryResultType::Many) {
+                duckdb_execute_prepared_streaming(*prepared_statement, &mut result)
+            } else {
+                duckdb_execute_prepared(*prepared_statement, &mut result)
+            };
             let mut result = CBox::new(result, |mut r| duckdb_destroy_result(&mut r));
             if rc != duckdb_state_DuckDBSuccess {
                 let _ = tx.send(Err(DuckDBError::new(
@@ -134,6 +151,22 @@ impl DuckDBConnection {
                 )
                 .into()));
             }
+            let statement_type = duckdb_result_statement_type(*result);
+            if result_type == QueryResultType::None
+                || matches!(
+                    statement_type,
+                    duckdb_statement_type_DUCKDB_STATEMENT_TYPE_INSERT
+                        | duckdb_statement_type_DUCKDB_STATEMENT_TYPE_DELETE
+                )
+            {
+                let rows_affected = duckdb_rows_changed(&mut *result);
+                let _ = tx.send(Ok(sqlx_core::Either::Left(DuckDBQueryResult {
+                    rows_affected,
+                    ..Default::default()
+                })));
+                return;
+            }
+            // duckdb_execute_prepared_streaming can also produce non streaming result, must check separately
             let is_streaming = duckdb_result_is_streaming(*result);
             loop {
                 let chunk = CBox::new(
@@ -147,7 +180,11 @@ impl DuckDBConnection {
                 if chunk.is_null() {
                     return;
                 }
-                let rows = duckdb_data_chunk_get_size(*chunk);
+                let rows = if result_type == QueryResultType::One {
+                    1
+                } else {
+                    duckdb_data_chunk_get_size(*chunk)
+                };
                 let cols = duckdb_data_chunk_get_column_count(*chunk);
                 let info = (0..cols)
                     .map(|i| {
@@ -183,30 +220,10 @@ impl DuckDBConnection {
                     let message = DuckDBRow(columns.collect::<Result<_>>().unwrap());
                     let _ = tx.send(Ok(sqlx_core::Either::Right(message)));
                 });
+                if result_type == QueryResultType::One {
+                    return;
+                }
             }
-            // } else {
-            //     let result_type = duckdb_result_statement_type(*result);
-            //     match result_type {
-            //         duckdb_result_type_DUCKDB_RESULT_TYPE_CHANGED_ROWS
-            //         | duckdb_result_type_DUCKDB_RESULT_TYPE_NOTHING => {
-            //             let _ = tx.send(Ok(sqlx_core::Either::Left(DuckDBQueryResult::new(
-            //                 duckdb_row_count(&mut *result),
-            //             ))));
-            //         }
-            //         duckdb_result_type_DUCKDB_RESULT_TYPE_QUERY_RESULT => {}
-            //         duckdb_result_type_DUCKDB_RESULT_TYPE_INVALID => {
-            //             let _ = tx.send(Err(
-            //                 DuckDBError::new("Invalid query result type".into()).into()
-            //             ));
-            //         }
-            //         _ => {
-            //             let _ = tx.send(Err(DuckDBError::new(
-            //                 "Unexpected error, no information".into(),
-            //             )
-            //             .into()));
-            //         }
-            //     }
-            // }
         });
         rx.into_stream().boxed()
     }
@@ -276,18 +293,28 @@ impl<'c> Executor<'c> for &'c mut DuckDBConnection {
             Ok(arguments) => arguments,
             Err(error) => return stream::once(future::ready(Err(error))).boxed(),
         };
-        self.run(query.sql(), arguments, false)
+        self.run(QueryResultType::Many, query.sql(), arguments, false)
     }
 
-    fn fetch_optional<'e, 'q: 'e, E>(
-        self,
-        query: E,
-    ) -> BoxFuture<'e, std::result::Result<Option<<Self::Database as Database>::Row>, Error>>
+    fn fetch_optional<'e, 'q: 'e, E>(self, mut query: E) -> BoxFuture<'e, Result<Option<DuckDBRow>>>
     where
         'c: 'e,
         E: 'q + Execute<'q, Self::Database>,
     {
-        todo!()
+        let sql = query.sql();
+        let arguments = match query.take_arguments().map_err(Error::Encode) {
+            Ok(arguments) => arguments,
+            Err(error) => return future::ready(Err(error)).boxed(),
+        };
+        let mut stream = self.run(QueryResultType::One, query.sql(), arguments, false);
+        Box::pin(async move {
+            match stream.next().await {
+                Some(Ok(Either::Right(row))) => Ok(Some(row)),
+                Some(Ok(Either::Left(_))) => Ok(None),
+                Some(Err(e)) => Err(e),
+                None => Ok(None),
+            }
+        })
     }
 
     fn prepare_with<'e, 'q: 'e>(

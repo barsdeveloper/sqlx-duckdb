@@ -1,7 +1,7 @@
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct DuckDBQueryResult {
-    rows_affected: u64,
-    last_insert_id: Option<i64>,
+    pub(crate) rows_affected: u64,
+    pub(crate) last_insert_id: Option<i64>,
 }
 
 impl DuckDBQueryResult {
