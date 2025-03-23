@@ -1,14 +1,11 @@
 use crate::{error::DuckDBError, type_info::DuckDBField};
 use libduckdb_sys::*;
 use rust_decimal::Decimal;
-use sqlx_core::{
-    Result,
-    types::time::{Date, OffsetDateTime, PrimitiveDateTime, Time},
-};
+use sqlx_core::{Result, types::time};
 use std::{ffi::c_void, ptr, slice};
 
-pub(crate) fn convert_date(date: duckdb_date_struct) -> Result<Date> {
-    Date::from_calendar_date(
+pub(crate) fn convert_date(date: duckdb_date_struct) -> Result<time::Date> {
+    time::Date::from_calendar_date(
         date.year,
         (date.month as u8).try_into().unwrap(),
         date.day as u8,
@@ -19,8 +16,8 @@ pub(crate) fn convert_date(date: duckdb_date_struct) -> Result<Date> {
     })
 }
 
-pub(crate) fn convert_time(time: duckdb_time_struct) -> Result<Time> {
-    Time::from_hms_micro(
+pub(crate) fn convert_time(time: duckdb_time_struct) -> Result<time::Time> {
+    time::Time::from_hms_micro(
         time.hour as u8,
         time.min as u8,
         time.sec as u8,
@@ -113,16 +110,18 @@ pub(crate) fn extract_value(
             }),
             DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP => K::Timestamp(if is_valid {
                 let data = *(data as *const duckdb_timestamp).add(row);
-                let date_time = OffsetDateTime::from_unix_timestamp_nanos(
-                    data.micros as i128 * 1000,
-                )
-                .map_err(|e| {
-                    DuckDBError::from_source_message(
-                        e.into(),
-                        "Unexpected error while creating a timestamp".into(),
-                    )
-                })?;
-                Some(PrimitiveDateTime::new(date_time.date(), date_time.time()))
+                let date_time =
+                    time::OffsetDateTime::from_unix_timestamp_nanos(data.micros as i128 * 1000)
+                        .map_err(|e| {
+                            DuckDBError::from_source_message(
+                                e.into(),
+                                "Unexpected error while creating a timestamp".into(),
+                            )
+                        })?;
+                Some(time::PrimitiveDateTime::new(
+                    date_time.date(),
+                    date_time.time(),
+                ))
             } else {
                 None
             }),
@@ -210,7 +209,7 @@ pub(crate) fn extract_value(
             | DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_NS => K::Timestamp(if is_valid {
                 let data = duckdb_from_timestamp(*(data as *const duckdb_timestamp).add(row));
                 data.time;
-                Some(PrimitiveDateTime::new(
+                Some(time::PrimitiveDateTime::new(
                     convert_date(data.date)?,
                     convert_time(data.time)?,
                 ))
@@ -268,12 +267,30 @@ pub(crate) fn extract_value(
             //  DUCKDB_TYPE_DUCKDB_TYPE_UUID =>
             //  DUCKDB_TYPE_DUCKDB_TYPE_UNION =>
             //  DUCKDB_TYPE_DUCKDB_TYPE_BIT =>
-            //  DUCKDB_TYPE_DUCKDB_TYPE_TIME_TZ =>
-            //  DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ =>
+            DUCKDB_TYPE_DUCKDB_TYPE_TIMESTAMP_TZ => {
+                let date_time = duckdb_from_timestamp(*(data as *const duckdb_timestamp).add(row));
+                K::Timestamp(if is_valid {
+                    Some(time::PrimitiveDateTime::new(
+                        convert_date(date_time.date)?,
+                        convert_time(date_time.time)?,
+                    ))
+                } else {
+                    None
+                })
+            }
             //  DUCKDB_TYPE_DUCKDB_TYPE_ANY =>
             //  DUCKDB_TYPE_DUCKDB_TYPE_VARINT =>
             DUCKDB_TYPE_DUCKDB_TYPE_SQLNULL => K::Null,
-            _ => return Err(DuckDBError::new("Invalid type".into()).into()),
+            _ => {
+                return Err(DuckDBError::new(
+                    format!(
+                        "Invalid type value: {}, must be one of the expected DUCKDB_TYPE_DUCKDB_TYPE_* variant",
+                        type_id
+                    )
+                    .into(),
+                )
+                .into());
+            }
         };
         Ok(result)
     }

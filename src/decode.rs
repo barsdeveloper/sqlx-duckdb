@@ -4,6 +4,7 @@ use crate::type_info::{DuckDBField, DuckdbDBTypeInfo};
 use crate::{database::DuckDB, value::DuckDBValueRef};
 use sqlx_core::decode::Decode;
 use sqlx_core::types::Type;
+use sqlx_core::types::time;
 use sqlx_core::value::ValueRef;
 
 macro_rules! impl_trait {
@@ -18,7 +19,7 @@ macro_rules! impl_trait {
         impl<'r> Decode<'r, DuckDB> for $rust_type {
             fn decode(value: DuckDBValueRef<'r>) -> Result<Self, Box<dyn Error + Send + Sync>> {
                 if let $duckdb_variant(Some(ref value), ..) = value.type_info().as_ref().field {
-                    Ok(value.clone())
+                    Ok(value.clone().into())
                 } else {
                     let error =
                         if matches!(value.type_info().as_ref().field, $duckdb_variant(None, ..)) {
@@ -57,14 +58,15 @@ impl_trait!(DuckDBField::Float64, f64);
 impl_trait!(DuckDBField::Decimal, ::rust_decimal::Decimal, Decode);
 impl_trait!(DuckDBField::Varchar, String);
 impl_trait!(DuckDBField::Blob, Box<[u8]>);
+impl_trait!(DuckDBField::Blob, Vec<u8>);
 #[cfg(feature = "time")]
-impl_trait!(DuckDBField::Date, ::time::Date);
+impl_trait!(DuckDBField::Date, time::Date);
 #[cfg(feature = "time")]
-impl_trait!(DuckDBField::Time, ::time::Time);
+impl_trait!(DuckDBField::Time, time::Time);
 #[cfg(feature = "time")]
-impl_trait!(DuckDBField::Timestamp, ::time::PrimitiveDateTime);
+impl_trait!(DuckDBField::Timestamp, time::PrimitiveDateTime);
 #[cfg(feature = "time")]
-impl_trait!(DuckDBField::TimestampWithTimezone, ::time::OffsetDateTime);
+impl_trait!(DuckDBField::TimestampWithTimezone, time::OffsetDateTime);
 impl_trait!(DuckDBField::Interval, crate::interval::Interval);
 
 impl Type<DuckDB> for rust_decimal::Decimal {

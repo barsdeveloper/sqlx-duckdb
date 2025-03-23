@@ -96,6 +96,7 @@ impl<T: NullCheck> DerefMut for CBox<T> {
 }
 
 unsafe impl<T: NullCheck> Send for CBox<T> {}
+unsafe impl<T: NullCheck> Sync for CBox<T> {}
 
 #[cfg(test)]
 mod tests {

@@ -19,7 +19,6 @@ use sqlx_core::{
     executor::{Execute, Executor},
     transaction::Transaction,
 };
-use std::cell::OnceCell;
 use std::ffi::{CStr, CString, c_char};
 use std::ops::DerefMut;
 use std::pin::Pin;
@@ -105,14 +104,14 @@ impl DuckDBConnection {
         })
     }
 
-    pub(crate) fn run(
+    pub(crate) fn run<'q, E: Execute<'q, DuckDB>>(
         &mut self,
         result_type: QueryResultType,
-        query: &str,
+        query: E,
         arguments: Option<DuckDBArguments>,
         cached: bool,
     ) -> Pin<Box<dyn Stream<Item = Result<Either<DuckDBQueryResult, DuckDBRow>>> + Send>> {
-        let query = CString::new(query).map_err(|e| DuckDBError::new(e.to_string()));
+        let query = CString::new(query.sql()).map_err(|e| DuckDBError::new(e.to_string()));
         if query.is_err() {
             return stream::once(future::ready(Err(query.unwrap_err().into()))).boxed();
         }

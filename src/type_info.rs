@@ -157,6 +157,24 @@ impl TypeInfo for DuckdbDBTypeInfo {
     fn name(&self) -> &str {
         &self.type_name
     }
+
+    fn type_compatible(&self, other: &Self) -> bool
+    where
+        Self: Sized,
+    {
+        if self == other {
+            return true;
+        }
+
+        if let (
+            DuckDBField::Decimal(_, self_w, self_s),
+            DuckDBField::Decimal(_, other_w, other_s),
+        ) = (&self.field, &other.field)
+        {
+            return *self_w == 0 && *self_s == 0 || *other_w == 0 && *other_s == 0;
+        }
+        false
+    }
 }
 
 impl From<DuckDBField> for DuckdbDBTypeInfo {

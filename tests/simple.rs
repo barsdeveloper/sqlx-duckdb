@@ -4,7 +4,7 @@ mod tests {
     use std::f64;
 
     use crate::fixtures::empty_db::EmptyDB;
-    use sqlx::prelude::*;
+    use sqlx::{Execute, prelude::*};
     use sqlx_duckdb::{connection::DuckDBConnection, database::DuckDB};
 
     #[tokio::test]
@@ -114,8 +114,8 @@ mod tests {
         .unwrap();
         assert_eq!(result.rows_affected(), 3);
 
-        let result = sqlx::query_as::<DuckDB, Entry>("SELECT * from simple_2")
-            .fetch_all(connection)
+        let result = sqlx::query_as::<DuckDB, Entry>("SELECT * FROM simple_2")
+            .fetch_all(&mut *connection)
             .await
             .unwrap();
         assert_eq!(result, vec![
@@ -135,5 +135,21 @@ mod tests {
                 charlie: 788372
             },
         ]);
+
+        // let result = sqlx::raw_sql(
+        //     r#"
+        //         INSERT INTO simple_2 VALUES (false, -1000000.24, 1);
+        //         SELECT * FROM simple_2;
+        //     "#,
+        // )
+        // .fetch_all(&mut *connection)
+        // .await
+        // .unwrap();
+        // let entry = Entry::from_row(&result[3]).unwrap();
+        // assert_eq!(entry, Entry {
+        //     alpha: false,
+        //     bravo: -1000000.24,
+        //     charlie: 1
+        // });
     }
 }

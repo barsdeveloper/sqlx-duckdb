@@ -1503,6 +1503,7 @@ dependencies = [
  "rust_decimal",
  "sqlx",
  "sqlx-core",
+ "sqlx-duckdb",
  "tokio",
  "tokio-stream",
  "uuid",
@@ -1585,6 +1586,7 @@ dependencies = [
  "sqlx-core",
  "stringprep",
  "thiserror",
+ "time",
  "tracing",
  "whoami",
 ]
@@ -1622,6 +1624,7 @@ dependencies = [
  "sqlx-core",
  "stringprep",
  "thiserror",
+ "time",
  "tracing",
  "whoami",
 ]
@@ -1645,6 +1648,7 @@ dependencies = [
  "serde",
  "serde_urlencoded",
  "sqlx-core",
+ "time",
  "tracing",
  "url",
 ]

@@ -22,5 +22,6 @@ tokio-stream = "0.1.17"
 uuid = "1.15.1"
 
 [dev-dependencies]
-sqlx = { version = "0.8.3", features = ["runtime-tokio"] }
+sqlx-duckdb = { path = ".", features = ["time"] }
+sqlx = { version = "0.8.3", features = ["runtime-tokio", "time"] }
 tokio = { version = "1.44.1", features = ["macros", "rt"] }
